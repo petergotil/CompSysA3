@@ -76,20 +76,36 @@ void get_file_sha(const char* sourcefile, hashdata_t hash, int size)
  * as handed out, this function is never called. You will need to decide where 
  * it is sensible to do so.
  */
-void get_signature(char* password, char* salt, hashdata_t* hash)
-{
-    // Your code here. This function has been added as a guide, but feel free 
-    // to add more, or work in other parts of the code
+void get_signature(char* password, char* salt, hashdata_t* hash) {
+    strcat(password, salt);
+    get_data_sha(password, hash, strlen(password), SHA256_HASH_SIZE);
 }
 
 /*
  * Register a new user with a server by sending the username and signature to 
  * the server
  */
-void register_user(char* username, char* password, char* salt)
-{
-    // Your code here. This function has been added as a guide, but feel free 
-    // to add more, or work in other parts of the code
+void register_user(char* username, char* password, char* salt, int clientfd) {
+    hashdata_t* hash;
+    get_signature(password, salt, hash);
+    
+    RequestHeader_t header;
+    strncpy(header.username, username, USERNAME_LEN);
+    memcpy(header.salted_and_hashed, hash, SHA256_HASH_SIZE);
+    header.length = 0;
+
+    Request_t request;
+    request.header = header;
+
+    // Send request to server
+    if (compsys_helper_writen(clientfd, &request, sizeof(request)) != sizeof(request)) {
+        fprintf(stderr, "Error sending request to server\n");
+        close(clientfd);
+        return;
+    }
+
+    // Close client connection
+    close(clientfd);
 }
 
 /*
@@ -154,6 +170,13 @@ int main(int argc, char **argv)
     fprintf(stdout, "Client at: %s:%s\n", my_ip, my_port);
     fprintf(stdout, "Server at: %s:%s\n", server_ip, server_port);
 
+    // Connect to the server
+    int clientfd = compsys_helper_open_clientfd(server_ip, server_port);
+    if (clientfd < 0) {
+        fprintf(stderr, "Error opening client connection\n");
+        return;
+    }
+
     char username[USERNAME_LEN];
     char password[PASSWORD_LEN];
     char user_salt[SALT_LEN+1];
@@ -199,7 +222,7 @@ int main(int argc, char **argv)
     // Register the given user. As handed out, this line will run every time 
     // this client starts, and so should be removed if user interaction is 
     // added
-    register_user(username, password, user_salt);
+    register_user(username, password, user_salt, clientfd);
 
     // Retrieve the smaller file, that doesn't not require support for blocks. 
     // As handed out, this line will run every time this client starts, and so 
@@ -211,5 +234,6 @@ int main(int argc, char **argv)
     // should be removed if user interaction is added
     get_file(username, password, user_salt, "hamlet.txt");
 
+    close(clientfd);
     exit(EXIT_SUCCESS);
 }
