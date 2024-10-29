@@ -86,7 +86,7 @@ void get_signature(char* password, char* salt, hashdata_t* hash) {
  * the server
  */
 void register_user(char* username, char* password, char* salt, int clientfd) {
-    hashdata_t* hash;
+    hashdata_t* hash = malloc(SHA256_HASH_SIZE);
     get_signature(password, salt, hash);
     
     RequestHeader_t header;
@@ -96,6 +96,7 @@ void register_user(char* username, char* password, char* salt, int clientfd) {
 
     Request_t request;
     request.header = header;
+    memset(request.payload, 0, PATH_LEN);
 
     // Send request to server
     if (compsys_helper_writen(clientfd, &request, sizeof(request)) != sizeof(request)) {
@@ -104,8 +105,18 @@ void register_user(char* username, char* password, char* salt, int clientfd) {
         return;
     }
 
-    // Close client connection
-    close(clientfd);
+    // Virker ikke    
+    // char response[1024];
+    // ssize_t n = compsys_helper_readn(clientfd, response, sizeof(response));
+    // if (n <= 0) {
+    //     fprintf(stderr, "Error: Unable to read response from server\n");
+    //     close(clientfd);
+    //     return;
+    // }
+
+    // printf("Got response: %s\n", response);
+    
+
 }
 
 /*
@@ -113,10 +124,47 @@ void register_user(char* username, char* password, char* salt, int clientfd) {
  * a file path. Note that this function should be able to deal with both small 
  * and large files. 
  */
-void get_file(char* username, char* password, char* salt, char* to_get)
-{
-    // Your code here. This function has been added as a guide, but feel free 
-    // to add more, or work in other parts of the code
+void get_file(char* username, char* password, char* salt, char* to_get, int clientfd) {
+    hashdata_t* hash = malloc(SHA256_HASH_SIZE);
+    get_signature(password, salt, hash);
+    printf("tester1\n");
+    RequestHeader_t header;
+    strncpy(header.username, username, USERNAME_LEN);
+    memcpy(header.salted_and_hashed, hash, SHA256_HASH_SIZE);
+    header.length = 0;
+
+    Request_t request;
+    request.header = header;
+    strncpy(request.payload, to_get, PATH_LEN);
+
+    // Send request to server
+    if (compsys_helper_writen(clientfd, &request, sizeof(request)) != sizeof(request)) {
+        fprintf(stderr, "Error sending request to server\n");
+        close(clientfd);
+        return;
+    }
+
+    char buffer[MAXBUF];
+    ssize_t n;
+    FILE *file = fopen(to_get, "w");
+    if (!file) {
+        fprintf(stderr, "Error opening file for writing\n");
+        close(clientfd);
+        free(hash);
+        return;
+    }
+    printf("tester2\n");
+    // Read the response from the server and write to the file
+    while ((n = compsys_helper_readn(clientfd, buffer, MAXBUF)) > 0) {
+        fwrite(buffer, 1, n, file);
+    }
+
+    if (n < 0) {
+        fprintf(stderr, "Error reading from server\n");
+    }
+    printf("tester3\n");
+    fclose(file);
+    free(hash);
 }
 
 int main(int argc, char **argv)
@@ -222,17 +270,20 @@ int main(int argc, char **argv)
     // Register the given user. As handed out, this line will run every time 
     // this client starts, and so should be removed if user interaction is 
     // added
-    register_user(username, password, user_salt, clientfd);
+
+    // register_user(username, password, user_salt, clientfd);
 
     // Retrieve the smaller file, that doesn't not require support for blocks. 
     // As handed out, this line will run every time this client starts, and so 
     // should be removed if user interaction is added
-    get_file(username, password, user_salt, "tiny.txt");
-
+    printf("tester\n");
+    get_file(username, password, user_salt, "tiny.txt", clientfd);
+    printf("tester\n");
     // Retrieve the larger file, that requires support for blocked messages. As
     // handed out, this line will run every time this client starts, and so 
     // should be removed if user interaction is added
-    get_file(username, password, user_salt, "hamlet.txt");
+
+    // get_file(username, password, user_salt, "hamlet.txt", clientfd);
 
     close(clientfd);
     exit(EXIT_SUCCESS);
