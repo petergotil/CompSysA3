@@ -76,9 +76,31 @@ void get_file_sha(const char* sourcefile, hashdata_t hash, int size)
  * as handed out, this function is never called. You will need to decide where 
  * it is sensible to do so.
  */
-void get_signature(char* password, char* salt, hashdata_t* hash) {
+void get_signature(char* password, char* salt, hashdata_t hash) {
     strcat(password, salt);
     get_data_sha(password, hash, strlen(password), SHA256_HASH_SIZE);
+}
+
+void read_response(int clientfd) {
+    char response[1024];
+    ssize_t n = compsys_helper_readn(clientfd, response, sizeof(response));
+    if (n <= 0) {
+        fprintf(stderr, "Error: Unable to read response from server\n");
+        close(clientfd);
+        return;
+    }
+
+
+    uint32_t response_length = ntohl(*(uint32_t *)(response));
+
+    char response_data[response_length + 1];
+
+    //Plusser 80 fordi der er 80 bytes til headeren
+    memcpy(response_data, response + 80, response_length);
+    response_data[response_length] = '\0'; // Null-terminerer strengen
+    printf("Got response: %s\n", response_data);
+
+    close(clientfd);
 }
 
 /*
@@ -86,7 +108,7 @@ void get_signature(char* password, char* salt, hashdata_t* hash) {
  * the server
  */
 void register_user(char* username, char* password, char* salt, int clientfd) {
-    hashdata_t* hash = malloc(SHA256_HASH_SIZE);
+    hashdata_t hash;
     get_signature(password, salt, hash);
     
     RequestHeader_t header;
@@ -104,19 +126,8 @@ void register_user(char* username, char* password, char* salt, int clientfd) {
         close(clientfd);
         return;
     }
-
-    // Virker ikke    
-    // char response[1024];
-    // ssize_t n = compsys_helper_readn(clientfd, response, sizeof(response));
-    // if (n <= 0) {
-    //     fprintf(stderr, "Error: Unable to read response from server\n");
-    //     close(clientfd);
-    //     return;
-    // }
-
-    // printf("Got response: %s\n", response);
     
-
+    read_response(clientfd);
 }
 
 /*
@@ -125,9 +136,8 @@ void register_user(char* username, char* password, char* salt, int clientfd) {
  * and large files. 
  */
 void get_file(char* username, char* password, char* salt, char* to_get, int clientfd) {
-    hashdata_t* hash = malloc(SHA256_HASH_SIZE);
+    hashdata_t hash;
     get_signature(password, salt, hash);
-    printf("tester1\n");
     RequestHeader_t header;
     strncpy(header.username, username, USERNAME_LEN);
     memcpy(header.salted_and_hashed, hash, SHA256_HASH_SIZE);
@@ -150,10 +160,8 @@ void get_file(char* username, char* password, char* salt, char* to_get, int clie
     if (!file) {
         fprintf(stderr, "Error opening file for writing\n");
         close(clientfd);
-        free(hash);
         return;
     }
-    printf("tester2\n");
     // Read the response from the server and write to the file
     while ((n = compsys_helper_readn(clientfd, buffer, MAXBUF)) > 0) {
         fwrite(buffer, 1, n, file);
@@ -162,9 +170,7 @@ void get_file(char* username, char* password, char* salt, char* to_get, int clie
     if (n < 0) {
         fprintf(stderr, "Error reading from server\n");
     }
-    printf("tester3\n");
     fclose(file);
-    free(hash);
 }
 
 int main(int argc, char **argv)
@@ -222,7 +228,7 @@ int main(int argc, char **argv)
     int clientfd = compsys_helper_open_clientfd(server_ip, server_port);
     if (clientfd < 0) {
         fprintf(stderr, "Error opening client connection\n");
-        return;
+        return 1;
     }
 
     char username[USERNAME_LEN];
@@ -271,14 +277,14 @@ int main(int argc, char **argv)
     // this client starts, and so should be removed if user interaction is 
     // added
 
-    // register_user(username, password, user_salt, clientfd);
+    register_user(username, password, user_salt, clientfd);
 
     // Retrieve the smaller file, that doesn't not require support for blocks. 
     // As handed out, this line will run every time this client starts, and so 
     // should be removed if user interaction is added
-    printf("tester\n");
-    get_file(username, password, user_salt, "tiny.txt", clientfd);
-    printf("tester\n");
+    
+    // get_file(username, password, user_salt, "tiny.txt", clientfd);
+
     // Retrieve the larger file, that requires support for blocked messages. As
     // handed out, this line will run every time this client starts, and so 
     // should be removed if user interaction is added
