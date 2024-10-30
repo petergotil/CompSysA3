@@ -4,6 +4,7 @@
 #include <sys/socket.h>
 #include <arpa/inet.h>
 #include <string.h>
+#include <time.h>
 
 #ifdef __APPLE__
 #include "./endian.h"
@@ -81,26 +82,84 @@ void get_signature(char* password, char* salt, hashdata_t hash) {
     get_data_sha(password, hash, strlen(password), SHA256_HASH_SIZE);
 }
 
+void generate_random_salt(char* salt, size_t length) {
+    const char charset[] = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789";
+    for (size_t i = 0; i < length; i++) {
+        int key = rand() % (int)(sizeof(charset) - 1);
+        salt[i] = charset[key];
+    }
+    salt[length] = '\0';
+}
+
+void save_salt(const char* username, const char* salt) {
+    FILE* file = fopen("user_salts.txt", "a");
+    if (file == NULL) {
+        fprintf(stderr, "Error: Unable to open file for saving salt\n");
+        return;
+    }
+    fprintf(file, "%s:%s\n", username, salt);
+    fclose(file);
+}
+
+int load_salt(const char* username, char* salt, size_t length) {
+    FILE* file = fopen("user_salts.txt", "r");
+    if (file == NULL) {
+        fprintf(stderr, "Error: Unable to open file for loading salt\n");
+        return 0;
+    }
+
+    char line[128];
+    while (fgets(line, sizeof(line), file)) {
+        char saved_username[USERNAME_LEN];
+        char saved_salt[SALT_LEN];
+        sscanf(line, "%[^:]:%s", saved_username, saved_salt);
+        if (strcmp(saved_username, username) == 0) {
+            strncpy(salt, saved_salt, length);
+            fclose(file);
+            return 1;
+        }
+    }
+
+    fclose(file);
+    return 0;
+}
+
 void read_response(int clientfd) {
     char response[1024];
     ssize_t n = compsys_helper_readn(clientfd, response, sizeof(response));
     if (n <= 0) {
         fprintf(stderr, "Error: Unable to read response from server\n");
-        close(clientfd);
         return;
     }
 
-
     uint32_t response_length = ntohl(*(uint32_t *)(response));
+    uint32_t status_code = ntohl(*(uint32_t *)(response + 4));
+    uint32_t block_number = ntohl(*(uint32_t *)(response + 8));
+    uint32_t block_count = ntohl(*(uint32_t *)(response + 12));
+    uint8_t block_hash[32];
+    uint8_t total_hash[32];
+    memcpy(block_hash, response + 16, 32);
+    memcpy(total_hash, response + 48, 32);
+
+    printf("Response Length: %u\n", response_length);
+    printf("Status Code: %u\n", status_code);
+    printf("Block Number: %u\n", block_number);
+    printf("Block Count: %u\n", block_count);
+    printf("Block Hash: ");
+    for (int i = 0; i < 32; i++) {
+        printf("%02x", block_hash[i]);
+    }
+    printf("\n");
+    printf("Total Hash: ");
+    for (int i = 0; i < 32; i++) {
+        printf("%02x", total_hash[i]);
+    }
+    printf("\n");
 
     char response_data[response_length + 1];
-
-    //Plusser 80 fordi der er 80 bytes til headeren
     memcpy(response_data, response + 80, response_length);
-    response_data[response_length] = '\0'; // Null-terminerer strengen
+    response_data[response_length] = '\0';
     printf("Got response: %s\n", response_data);
-
-    close(clientfd);
 }
 
 /*
@@ -123,7 +182,6 @@ void register_user(char* username, char* password, char* salt, int clientfd) {
     // Send request to server
     if (compsys_helper_writen(clientfd, &request, sizeof(request)) != sizeof(request)) {
         fprintf(stderr, "Error sending request to server\n");
-        close(clientfd);
         return;
     }
     
@@ -138,39 +196,45 @@ void register_user(char* username, char* password, char* salt, int clientfd) {
 void get_file(char* username, char* password, char* salt, char* to_get, int clientfd) {
     hashdata_t hash;
     get_signature(password, salt, hash);
+
     RequestHeader_t header;
     strncpy(header.username, username, USERNAME_LEN);
     memcpy(header.salted_and_hashed, hash, SHA256_HASH_SIZE);
-    header.length = 0;
+    header.length = htonl(strlen(to_get));
 
     Request_t request;
     request.header = header;
     strncpy(request.payload, to_get, PATH_LEN);
 
-    // Send request to server
     if (compsys_helper_writen(clientfd, &request, sizeof(request)) != sizeof(request)) {
         fprintf(stderr, "Error sending request to server\n");
-        close(clientfd);
         return;
     }
 
-    char buffer[MAXBUF];
-    ssize_t n;
-    FILE *file = fopen(to_get, "w");
+    char response[1024];
+    ssize_t n = compsys_helper_readn(clientfd, response, sizeof(response));
+    if (n <= 0) {
+        fprintf(stderr, "Error: Unable to read response from server\n");
+        return;
+    }
+
+    uint32_t response_length = ntohl(*(uint32_t *)(response));
+
+    char response_data[response_length + 1];
+    memcpy(response_data, response + 80, response_length);
+    response_data[response_length] = '\0';
+
+    FILE *file = fopen(to_get, "wb");
     if (!file) {
-        fprintf(stderr, "Error opening file for writing\n");
-        close(clientfd);
+        fprintf(stderr, "Error: Unable to open file %s for writing\n", to_get);
         return;
     }
-    // Read the response from the server and write to the file
-    while ((n = compsys_helper_readn(clientfd, buffer, MAXBUF)) > 0) {
-        fwrite(buffer, 1, n, file);
-    }
-
-    if (n < 0) {
-        fprintf(stderr, "Error reading from server\n");
-    }
+    fwrite(response_data, 1, response_length, file);
     fclose(file);
+
+    printf("File %s received and written successfully\n", to_get);
+
+    close(clientfd);
 }
 
 int main(int argc, char **argv)
@@ -256,16 +320,18 @@ int main(int argc, char **argv)
     // Note that a random salt should be used, but you may find it easier to
     // repeatedly test the same user credentials by using the hard coded value
     // below instead, and commenting out this randomly generating section.
-    for (int i=0; i<SALT_LEN; i++)
-    {
-        user_salt[i] = 'a' + (random() % 26);
-    }
-    user_salt[SALT_LEN] = '\0';
-    //strncpy(user_salt, 
+
+    // for (int i=0; i<SALT_LEN; i++)
+    // {
+    //     user_salt[i] = 'a' + (random() % 26);
+    // }
+    // user_salt[SALT_LEN] = '\0';
+
+    // strncpy(user_salt, 
     //    "0123456789012345678901234567890123456789012345678901234567890123\0", 
     //    SALT_LEN+1);
 
-    fprintf(stdout, "Using salt: %s\n", user_salt);
+    // fprintf(stdout, "Using salt: %s\n", user_salt);
 
     // The following function calls have been added as a structure to a 
     // potential solution demonstrating the core functionality. Feel free to 
@@ -276,14 +342,22 @@ int main(int argc, char **argv)
     // Register the given user. As handed out, this line will run every time 
     // this client starts, and so should be removed if user interaction is 
     // added
+    if (!load_salt(username, user_salt, SALT_LEN)) {
+        generate_random_salt(user_salt, SALT_LEN);
+        save_salt(username, user_salt);
+    }
 
     register_user(username, password, user_salt, clientfd);
 
-    // Retrieve the smaller file, that doesn't not require support for blocks. 
-    // As handed out, this line will run every time this client starts, and so 
-    // should be removed if user interaction is added
-    
-    // get_file(username, password, user_salt, "tiny.txt", clientfd);
+    // Reconnect to the server for the file request
+    clientfd = compsys_helper_open_clientfd(server_ip, server_port);
+    if (clientfd < 0) {
+        fprintf(stderr, "Error: Unable to connect to server\n");
+        exit(EXIT_FAILURE);
+    }
+
+    get_file(username, password, user_salt, "tiny.txt", clientfd);
+
 
     // Retrieve the larger file, that requires support for blocked messages. As
     // handed out, this line will run every time this client starts, and so 
