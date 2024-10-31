@@ -133,29 +133,7 @@ void read_response(int clientfd) {
     }
 
     uint32_t response_length = ntohl(*(uint32_t *)(response));
-    uint32_t status_code = ntohl(*(uint32_t *)(response + 4));
-    uint32_t block_number = ntohl(*(uint32_t *)(response + 8));
-    uint32_t block_count = ntohl(*(uint32_t *)(response + 12));
-    uint8_t block_hash[32];
-    uint8_t total_hash[32];
-    memcpy(block_hash, response + 16, 32);
-    memcpy(total_hash, response + 48, 32);
-
-    printf("Response Length: %u\n", response_length);
-    printf("Status Code: %u\n", status_code);
-    printf("Block Number: %u\n", block_number);
-    printf("Block Count: %u\n", block_count);
-    printf("Block Hash: ");
-    for (int i = 0; i < 32; i++) {
-        printf("%02x", block_hash[i]);
-    }
-    printf("\n");
-    printf("Total Hash: ");
-    for (int i = 0; i < 32; i++) {
-        printf("%02x", total_hash[i]);
-    }
-    printf("\n");
-
+   
     char response_data[response_length + 1];
     memcpy(response_data, response + 80, response_length);
     response_data[response_length] = '\0';
@@ -167,6 +145,7 @@ void read_response(int clientfd) {
  * the server
  */
 void register_user(char* username, char* password, char* salt, int clientfd) {
+    printf("salt: %s\n", salt);
     hashdata_t hash;
     get_signature(password, salt, hash);
     
@@ -194,6 +173,7 @@ void register_user(char* username, char* password, char* salt, int clientfd) {
  * and large files. 
  */
 void get_file(char* username, char* password, char* salt, char* to_get, int clientfd) {
+    printf("salt: %s\n", salt);
     hashdata_t hash;
     get_signature(password, salt, hash);
 
@@ -247,6 +227,8 @@ int main(int argc, char **argv)
         exit(EXIT_FAILURE);
     } 
 
+    srand(time(NULL));
+
     // Read in configuration options. Should include a client_directory, 
     // client_ip, client_port, server_ip, and server_port
     char buffer[128];
@@ -297,7 +279,7 @@ int main(int argc, char **argv)
 
     char username[USERNAME_LEN];
     char password[PASSWORD_LEN];
-    char user_salt[SALT_LEN+1];
+    char user_salt[SALT_LEN];
     
     fprintf(stdout, "Enter a username to proceed: ");
     scanf("%16s", username);
@@ -342,6 +324,7 @@ int main(int argc, char **argv)
     // Register the given user. As handed out, this line will run every time 
     // this client starts, and so should be removed if user interaction is 
     // added
+
     if (!load_salt(username, user_salt, SALT_LEN)) {
         generate_random_salt(user_salt, SALT_LEN);
         save_salt(username, user_salt);
@@ -355,6 +338,13 @@ int main(int argc, char **argv)
         fprintf(stderr, "Error: Unable to connect to server\n");
         exit(EXIT_FAILURE);
     }
+
+    if (!load_salt(username, user_salt, SALT_LEN)) {
+        generate_random_salt(user_salt, SALT_LEN);
+        save_salt(username, user_salt);
+    }
+
+
 
     get_file(username, password, user_salt, "tiny.txt", clientfd);
 
