@@ -77,9 +77,17 @@ void get_file_sha(const char* sourcefile, hashdata_t hash, int size)
  * as handed out, this function is never called. You will need to decide where 
  * it is sensible to do so.
  */
-void get_signature(char* password, char* salt, hashdata_t hash) {
-    strcat(password, salt);
-    get_data_sha(password, hash, strlen(password), SHA256_HASH_SIZE);
+void get_signature(char* password, char* salt, hashdata_t* hash) {
+    size_t password_len = strlen(password);
+    size_t salt_len = strlen(salt);
+    char* combined = malloc(password_len + salt_len + 1);
+
+    strcpy(combined, password);
+    strcat(combined, salt);
+
+    get_data_sha(combined, *hash, strlen(combined), SHA256_HASH_SIZE);
+
+    free(combined);
 }
 
 void generate_random_salt(char* salt, size_t length) {
@@ -124,7 +132,7 @@ int load_salt(const char* username, char* salt, size_t length) {
     return 0;
 }
 
-void read_response(int clientfd) {
+void read_response(int clientfd, const char* filename) {
     char response[1024];
     ssize_t n = compsys_helper_readn(clientfd, response, sizeof(response));
     if (n <= 0) {
@@ -132,12 +140,74 @@ void read_response(int clientfd) {
         return;
     }
 
-    uint32_t response_length = ntohl(*(uint32_t *)(response));
-   
-    char response_data[response_length + 1];
-    memcpy(response_data, response + 80, response_length);
-    response_data[response_length] = '\0';
-    printf("Got response: %s\n", response_data);
+    uint32_t total_blocks = ntohl(*(uint32_t *)(response + 12));
+
+    char** all_blocks = malloc(total_blocks * sizeof(char*));
+    if (all_blocks == NULL) {
+        fprintf(stderr, "Error: Unable to allocate memory for blocks\n");
+        return;
+    }
+    memset(all_blocks, 0, total_blocks * sizeof(char*));
+
+    uint32_t blocks_received = 0;
+
+    while (blocks_received < total_blocks) {
+        uint32_t block_length = ntohl(*(uint32_t *)(response));
+        uint32_t block_id = ntohl(*(uint32_t *)(response + 8));
+
+        printf("block_id: %d\n", block_id);
+        if (block_id > total_blocks) {
+            printf("block_id: %d\n", block_id);
+            fprintf(stderr, "Error: Invalid block id received\n");
+            break;
+        }
+
+        if (all_blocks[block_id] == NULL) {
+            all_blocks[block_id] = malloc(block_length + 1);
+            if (all_blocks[block_id] == NULL) {
+                fprintf(stderr, "Error: Unable to allocate memory for block data\n");
+                break;
+            }
+            memcpy(all_blocks[block_id], response + 80, block_length);
+            all_blocks[block_id][block_length] = '\0';
+            blocks_received++;
+        }
+
+        n = compsys_helper_readn(clientfd, response, sizeof(response));
+        if (n <= 0) {
+            fprintf(stderr, "Error: Unable to read response from server\n");
+            break;
+        }
+    }
+    
+    if (filename == NULL) {
+        for (uint32_t i = 0; i < total_blocks; i++) {
+            free(all_blocks[i]);
+        }
+        free(all_blocks);
+        return;
+    }
+
+    FILE* file = fopen(filename, "wb");
+    if (!file) {
+        fprintf(stderr, "Error: Unable to open file %s for writing\n", filename);
+        for (uint32_t i = 0; i < total_blocks; i++) {
+            free(all_blocks[i]);
+        }
+        free(all_blocks);
+        return;
+    }
+
+    for (uint32_t i = 0; i < total_blocks; i++) {
+        if (all_blocks[i] != NULL) {
+            fwrite(all_blocks[i], 1, strlen(all_blocks[i]), file);
+            free(all_blocks[i]);
+        }
+    }
+
+    fclose(file);
+    free(all_blocks);
+    printf("File %s received successfully\n", filename);
 }
 
 /*
@@ -147,8 +217,8 @@ void read_response(int clientfd) {
 void register_user(char* username, char* password, char* salt, int clientfd) {
     printf("salt: %s\n", salt);
     hashdata_t hash;
-    get_signature(password, salt, hash);
-    
+    get_signature(password, salt, &hash);
+    printf("salt after: %s\n", salt);
     RequestHeader_t header;
     strncpy(header.username, username, USERNAME_LEN);
     memcpy(header.salted_and_hashed, hash, SHA256_HASH_SIZE);
@@ -164,7 +234,7 @@ void register_user(char* username, char* password, char* salt, int clientfd) {
         return;
     }
     
-    read_response(clientfd);
+    read_response(clientfd, NULL);
 }
 
 /*
@@ -175,46 +245,20 @@ void register_user(char* username, char* password, char* salt, int clientfd) {
 void get_file(char* username, char* password, char* salt, char* to_get, int clientfd) {
     printf("salt: %s\n", salt);
     hashdata_t hash;
-    get_signature(password, salt, hash);
-
+    get_signature(password, salt, &hash);
     RequestHeader_t header;
     strncpy(header.username, username, USERNAME_LEN);
     memcpy(header.salted_and_hashed, hash, SHA256_HASH_SIZE);
     header.length = htonl(strlen(to_get));
-
     Request_t request;
     request.header = header;
     strncpy(request.payload, to_get, PATH_LEN);
-
     if (compsys_helper_writen(clientfd, &request, sizeof(request)) != sizeof(request)) {
         fprintf(stderr, "Error sending request to server\n");
         return;
     }
 
-    char response[1024];
-    ssize_t n = compsys_helper_readn(clientfd, response, sizeof(response));
-    if (n <= 0) {
-        fprintf(stderr, "Error: Unable to read response from server\n");
-        return;
-    }
-
-    uint32_t response_length = ntohl(*(uint32_t *)(response));
-
-    char response_data[response_length + 1];
-    memcpy(response_data, response + 80, response_length);
-    response_data[response_length] = '\0';
-
-    FILE *file = fopen(to_get, "wb");
-    if (!file) {
-        fprintf(stderr, "Error: Unable to open file %s for writing\n", to_get);
-        return;
-    }
-    fwrite(response_data, 1, response_length, file);
-    fclose(file);
-
-    printf("File %s received and written successfully\n", to_get);
-
-    close(clientfd);
+    read_response(clientfd, to_get);
 }
 
 int main(int argc, char **argv)
@@ -279,7 +323,7 @@ int main(int argc, char **argv)
 
     char username[USERNAME_LEN];
     char password[PASSWORD_LEN];
-    char user_salt[SALT_LEN];
+    char user_salt[SALT_LEN+1];
     
     fprintf(stdout, "Enter a username to proceed: ");
     scanf("%16s", username);
@@ -329,24 +373,25 @@ int main(int argc, char **argv)
         generate_random_salt(user_salt, SALT_LEN);
         save_salt(username, user_salt);
     }
+    printf("Loaded/Generated salt: %s\n", user_salt); // Debug print
 
     register_user(username, password, user_salt, clientfd);
 
-    // Reconnect to the server for the file request
+    // // Reconnect to the server for the file request
     clientfd = compsys_helper_open_clientfd(server_ip, server_port);
     if (clientfd < 0) {
         fprintf(stderr, "Error: Unable to connect to server\n");
         exit(EXIT_FAILURE);
     }
 
-    if (!load_salt(username, user_salt, SALT_LEN)) {
-        generate_random_salt(user_salt, SALT_LEN);
-        save_salt(username, user_salt);
-    }
+    // if (!load_salt(username, user_salt, SALT_LEN)) {
+    //     generate_random_salt(user_salt, SALT_LEN);
+    //     save_salt(username, user_salt);
+    // }
 
+    printf("Loaded/Generated salt: %s\n", user_salt); // Debug print
 
-
-    get_file(username, password, user_salt, "tiny.txt", clientfd);
+    get_file(username, password, user_salt, "hamlet.txt", clientfd);
 
 
     // Retrieve the larger file, that requires support for blocked messages. As
