@@ -140,7 +140,13 @@ void read_response(int clientfd, const char* filename) {
         return;
     }
 
+    uint32_t status_code = ntohl(*(uint32_t *)(response + 4));
     uint32_t total_blocks = ntohl(*(uint32_t *)(response + 12));
+
+    if (status_code != 1) {
+        fprintf(stderr, "Could not retrieve data from server\n");
+        return;
+    }
 
     char** all_blocks = malloc(total_blocks * sizeof(char*));
     if (all_blocks == NULL) {
@@ -153,11 +159,11 @@ void read_response(int clientfd, const char* filename) {
 
     while (blocks_received < total_blocks) {
         uint32_t block_length = ntohl(*(uint32_t *)(response));
+        printf("block_length: %d\n", block_length);
         uint32_t block_id = ntohl(*(uint32_t *)(response + 8));
 
         printf("block_id: %d\n", block_id);
-        if (block_id > total_blocks) {
-            printf("block_id: %d\n", block_id);
+        if (block_id >= total_blocks) {
             fprintf(stderr, "Error: Invalid block id received\n");
             break;
         }
@@ -173,10 +179,14 @@ void read_response(int clientfd, const char* filename) {
             blocks_received++;
         }
 
-        n = compsys_helper_readn(clientfd, response, sizeof(response));
-        if (n <= 0) {
-            fprintf(stderr, "Error: Unable to read response from server\n");
-            break;
+        if (blocks_received < total_blocks) {
+            n = compsys_helper_readn(clientfd, response, sizeof(response));
+            if (n <= 0) {
+                printf("blocks_received: %d\n", blocks_received);
+                printf("total_blocks: %d\n", total_blocks);
+                fprintf(stderr, "Error: Unable to read response from server\n");
+                break;
+            }
         }
     }
     
@@ -208,6 +218,7 @@ void read_response(int clientfd, const char* filename) {
     fclose(file);
     free(all_blocks);
     printf("File %s received successfully\n", filename);
+    close(clientfd);
 }
 
 /*
@@ -215,10 +226,8 @@ void read_response(int clientfd, const char* filename) {
  * the server
  */
 void register_user(char* username, char* password, char* salt, int clientfd) {
-    printf("salt: %s\n", salt);
     hashdata_t hash;
     get_signature(password, salt, &hash);
-    printf("salt after: %s\n", salt);
     RequestHeader_t header;
     strncpy(header.username, username, USERNAME_LEN);
     memcpy(header.salted_and_hashed, hash, SHA256_HASH_SIZE);
@@ -233,8 +242,22 @@ void register_user(char* username, char* password, char* salt, int clientfd) {
         fprintf(stderr, "Error sending request to server\n");
         return;
     }
-    
-    read_response(clientfd, NULL);
+
+
+    char response[1024];
+    ssize_t n = compsys_helper_readn(clientfd, response, sizeof(response));
+    if (n <= 0) {
+        fprintf(stderr, "Error: Unable to read response from server\n");
+        return;
+    }
+
+    uint32_t response_length = ntohl(*(uint32_t *)(response));
+   
+    char response_data[response_length + 1];
+    memcpy(response_data, response + 80, response_length);
+    response_data[response_length] = '\0';
+    printf("Got response: %s\n", response_data);
+    close(clientfd);
 }
 
 /*
@@ -243,7 +266,6 @@ void register_user(char* username, char* password, char* salt, int clientfd) {
  * and large files. 
  */
 void get_file(char* username, char* password, char* salt, char* to_get, int clientfd) {
-    printf("salt: %s\n", salt);
     hashdata_t hash;
     get_signature(password, salt, &hash);
     RequestHeader_t header;
@@ -373,25 +395,33 @@ int main(int argc, char **argv)
         generate_random_salt(user_salt, SALT_LEN);
         save_salt(username, user_salt);
     }
-    printf("Loaded/Generated salt: %s\n", user_salt); // Debug print
 
     register_user(username, password, user_salt, clientfd);
 
     // // Reconnect to the server for the file request
-    clientfd = compsys_helper_open_clientfd(server_ip, server_port);
-    if (clientfd < 0) {
-        fprintf(stderr, "Error: Unable to connect to server\n");
-        exit(EXIT_FAILURE);
-    }
 
     // if (!load_salt(username, user_salt, SALT_LEN)) {
     //     generate_random_salt(user_salt, SALT_LEN);
     //     save_salt(username, user_salt);
     // }
 
-    printf("Loaded/Generated salt: %s\n", user_salt); // Debug print
+    while (1) {
+        clientfd = compsys_helper_open_clientfd(server_ip, server_port);
+        if (clientfd < 0) {
+            fprintf(stderr, "Error: Unable to connect to server\n");
+            exit(EXIT_FAILURE);
+        }
+        fprintf(stdout, "Type the name of a file to be retrieved, or 'quit' to quit: ");
+        char file_to_get[PATH_LEN];
+        scanf("%s", file_to_get);
+        while ((c = getchar()) != '\n' && c != EOF);
 
-    get_file(username, password, user_salt, "hamlet.txt", clientfd);
+        if (strcmp(file_to_get, "quit") == 0) {
+            break;
+        }
+
+        get_file(username, password, user_salt, file_to_get, clientfd);
+    }
 
 
     // Retrieve the larger file, that requires support for blocked messages. As
