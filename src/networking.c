@@ -133,15 +133,20 @@ int load_salt(const char* username, char* salt, size_t length) {
 }
 
 void read_response(int clientfd, const char* filename) {
-    char response[1024];
-    ssize_t n = compsys_helper_readn(clientfd, response, sizeof(response));
+    char header[80];
+    char* block_data;
+    ssize_t n;
+    uint32_t status_code, total_blocks, block_length, block_id;
+    uint32_t blocks_received = 0;
+
+    n = compsys_helper_readn(clientfd, header, sizeof(header));
     if (n <= 0) {
         fprintf(stderr, "Error: Unable to read response from server\n");
         return;
     }
 
-    uint32_t status_code = ntohl(*(uint32_t *)(response + 4));
-    uint32_t total_blocks = ntohl(*(uint32_t *)(response + 12));
+    status_code = ntohl(*(uint32_t *)(header + 4));
+    total_blocks = ntohl(*(uint32_t *)(header + 12));
 
     if (status_code != 1) {
         fprintf(stderr, "Could not retrieve data from server\n");
@@ -155,37 +160,49 @@ void read_response(int clientfd, const char* filename) {
     }
     memset(all_blocks, 0, total_blocks * sizeof(char*));
 
-    uint32_t blocks_received = 0;
-
+    int i = 1;
     while (blocks_received < total_blocks) {
-        uint32_t block_length = ntohl(*(uint32_t *)(response));
-        printf("block_length: %d\n", block_length);
-        uint32_t block_id = ntohl(*(uint32_t *)(response + 8));
+        block_length = ntohl(*(uint32_t *)(header));
+        block_id = ntohl(*(uint32_t *)(header + 8));
 
-        printf("block_id: %d\n", block_id);
+        printf("Block-ID: %d (%d/%d)\n", block_id, i, total_blocks);
+        i++;
         if (block_id >= total_blocks) {
             fprintf(stderr, "Error: Invalid block id received\n");
-            break;
+            return;
         }
 
-        if (all_blocks[block_id] == NULL) {
-            all_blocks[block_id] = malloc(block_length + 1);
-            if (all_blocks[block_id] == NULL) {
-                fprintf(stderr, "Error: Unable to allocate memory for block data\n");
-                break;
+        // Allocate memory for the block data
+        block_data = malloc(block_length + 1);
+        if (block_data == NULL) {
+            fprintf(stderr, "Error: Unable to allocate memory for block data\n");
+            return;
+        }
+
+        // Read the block data
+        if (blocks_received < total_blocks) {
+            n = compsys_helper_readn(clientfd, block_data, block_length);
+            if (n <= 0) {
+                fprintf(stderr, "Error: Unable to read block data from server\n");
+                free(block_data);
+                return;
             }
-            memcpy(all_blocks[block_id], response + 80, block_length);
-            all_blocks[block_id][block_length] = '\0';
+        }
+
+        block_data[block_length] = '\0'; // Null-terminate the block data
+
+        if (all_blocks[block_id] == NULL) {
+            all_blocks[block_id] = block_data;
             blocks_received++;
+        } else {
+            free(block_data); // Free the block data if already received
         }
 
         if (blocks_received < total_blocks) {
-            n = compsys_helper_readn(clientfd, response, sizeof(response));
+            n = compsys_helper_readn(clientfd, header, sizeof(header));
             if (n <= 0) {
-                printf("blocks_received: %d\n", blocks_received);
-                printf("total_blocks: %d\n", total_blocks);
-                fprintf(stderr, "Error: Unable to read response from server\n");
-                break;
+                fprintf(stderr, "Error: Unable to read block header from server\n");
+                return;
             }
         }
     }
