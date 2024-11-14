@@ -4,6 +4,7 @@
 #include <sys/socket.h>
 #include <arpa/inet.h>
 #include <string.h>
+#include <time.h>
 
 #ifdef __APPLE__
 #include "./endian.h"
@@ -76,20 +77,204 @@ void get_file_sha(const char* sourcefile, hashdata_t hash, int size)
  * as handed out, this function is never called. You will need to decide where 
  * it is sensible to do so.
  */
-void get_signature(char* password, char* salt, hashdata_t* hash)
-{
-    // Your code here. This function has been added as a guide, but feel free 
-    // to add more, or work in other parts of the code
+void get_signature(char* password, char* salt, hashdata_t* hash) {
+    size_t password_len = strlen(password);
+    size_t salt_len = strlen(salt);
+    char* combined = malloc(password_len + salt_len + 1);
+
+    strcpy(combined, password);
+    strcat(combined, salt);
+
+    get_data_sha(combined, *hash, strlen(combined), SHA256_HASH_SIZE);
+
+    free(combined);
+}
+
+void generate_random_salt(char* salt, size_t length) {
+    const char charset[] = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789";
+    for (size_t i = 0; i < length; i++) {
+        int key = rand() % (int)(sizeof(charset) - 1);
+        salt[i] = charset[key];
+    }
+    salt[length] = '\0';
+}
+
+void save_salt(const char* username, const char* salt) {
+    FILE* file = fopen("user_salts.txt", "a");
+    if (file == NULL) {
+        fprintf(stderr, "Error: Unable to open file for saving salt\n");
+        return;
+    }
+    fprintf(file, "%s:%s\n", username, salt);
+    fclose(file);
+}
+
+int load_salt(const char* username, char* salt, size_t length) {
+    FILE* file = fopen("user_salts.txt", "r");
+    if (file == NULL) {
+        fprintf(stderr, "Error: Unable to open file for loading salt\n");
+        return 0;
+    }
+
+    char line[128];
+    while (fgets(line, sizeof(line), file)) {
+        char saved_username[USERNAME_LEN];
+        char saved_salt[SALT_LEN];
+        sscanf(line, "%[^:]:%s", saved_username, saved_salt);
+        if (strcmp(saved_username, username) == 0) {
+            strncpy(salt, saved_salt, length);
+            fclose(file);
+            return 1;
+        }
+    }
+
+    fclose(file);
+    return 0;
+}
+
+void read_response(int clientfd, const char* filename) {
+    char header[80];
+    char* block_data;
+    ssize_t n;
+    uint32_t status_code, total_blocks, block_length, block_id;
+    uint32_t blocks_received = 0;
+
+    n = compsys_helper_readn(clientfd, header, sizeof(header));
+    if (n <= 0) {
+        fprintf(stderr, "Error: Unable to read response from server\n");
+        return;
+    }
+
+    status_code = ntohl(*(uint32_t *)(header + 4));
+    total_blocks = ntohl(*(uint32_t *)(header + 12));
+
+    if (status_code != 1) {
+        fprintf(stderr, "Could not retrieve data from server\n");
+        return;
+    }
+
+    char** all_blocks = malloc(total_blocks * sizeof(char*));
+    if (all_blocks == NULL) {
+        fprintf(stderr, "Error: Unable to allocate memory for blocks\n");
+        return;
+    }
+    memset(all_blocks, 0, total_blocks * sizeof(char*));
+
+    int i = 1;
+    while (blocks_received < total_blocks) {
+        block_length = ntohl(*(uint32_t *)(header));
+        block_id = ntohl(*(uint32_t *)(header + 8));
+
+        printf("Block-ID: %d (%d/%d)\n", block_id, i, total_blocks);
+        i++;
+        if (block_id >= total_blocks) {
+            fprintf(stderr, "Error: Invalid block id received\n");
+            return;
+        }
+
+        // Allocate memory for the block data
+        block_data = malloc(block_length + 1);
+        if (block_data == NULL) {
+            fprintf(stderr, "Error: Unable to allocate memory for block data\n");
+            return;
+        }
+
+        // Read the block data
+        if (blocks_received < total_blocks) {
+            n = compsys_helper_readn(clientfd, block_data, block_length);
+            if (n <= 0) {
+                fprintf(stderr, "Error: Unable to read block data from server\n");
+                free(block_data);
+                return;
+            }
+        }
+
+        block_data[block_length] = '\0'; // Null-terminate the block data
+
+        if (all_blocks[block_id] == NULL) {
+            all_blocks[block_id] = block_data;
+            blocks_received++;
+        } else {
+            free(block_data); // Free the block data if already received
+        }
+
+        if (blocks_received < total_blocks) {
+            n = compsys_helper_readn(clientfd, header, sizeof(header));
+            if (n <= 0) {
+                fprintf(stderr, "Error: Unable to read block header from server\n");
+                return;
+            }
+        }
+    }
+    
+    if (filename == NULL) {
+        for (uint32_t i = 0; i < total_blocks; i++) {
+            free(all_blocks[i]);
+        }
+        free(all_blocks);
+        return;
+    }
+
+    FILE* file = fopen(filename, "wb");
+    if (!file) {
+        fprintf(stderr, "Error: Unable to open file %s for writing\n", filename);
+        for (uint32_t i = 0; i < total_blocks; i++) {
+            free(all_blocks[i]);
+        }
+        free(all_blocks);
+        return;
+    }
+
+    for (uint32_t i = 0; i < total_blocks; i++) {
+        if (all_blocks[i] != NULL) {
+            fwrite(all_blocks[i], 1, strlen(all_blocks[i]), file);
+            free(all_blocks[i]);
+        }
+    }
+
+    fclose(file);
+    free(all_blocks);
+    printf("File %s received successfully\n", filename);
+    close(clientfd);
 }
 
 /*
  * Register a new user with a server by sending the username and signature to 
  * the server
  */
-void register_user(char* username, char* password, char* salt)
-{
-    // Your code here. This function has been added as a guide, but feel free 
-    // to add more, or work in other parts of the code
+void register_user(char* username, char* password, char* salt, int clientfd) {
+    hashdata_t hash;
+    get_signature(password, salt, &hash);
+    RequestHeader_t header;
+    strncpy(header.username, username, USERNAME_LEN);
+    memcpy(header.salted_and_hashed, hash, SHA256_HASH_SIZE);
+    header.length = 0;
+
+    Request_t request;
+    request.header = header;
+    memset(request.payload, 0, PATH_LEN);
+
+    // Send request to server
+    if (compsys_helper_writen(clientfd, &request, sizeof(request)) != sizeof(request)) {
+        fprintf(stderr, "Error sending request to server\n");
+        return;
+    }
+
+
+    char response[1024];
+    ssize_t n = compsys_helper_readn(clientfd, response, sizeof(response));
+    if (n <= 0) {
+        fprintf(stderr, "Error: Unable to read response from server\n");
+        return;
+    }
+
+    uint32_t response_length = ntohl(*(uint32_t *)(response));
+   
+    char response_data[response_length + 1];
+    memcpy(response_data, response + 80, response_length);
+    response_data[response_length] = '\0';
+    printf("Got response: %s\n", response_data);
+    close(clientfd);
 }
 
 /*
@@ -97,10 +282,22 @@ void register_user(char* username, char* password, char* salt)
  * a file path. Note that this function should be able to deal with both small 
  * and large files. 
  */
-void get_file(char* username, char* password, char* salt, char* to_get)
-{
-    // Your code here. This function has been added as a guide, but feel free 
-    // to add more, or work in other parts of the code
+void get_file(char* username, char* password, char* salt, char* to_get, int clientfd) {
+    hashdata_t hash;
+    get_signature(password, salt, &hash);
+    RequestHeader_t header;
+    strncpy(header.username, username, USERNAME_LEN);
+    memcpy(header.salted_and_hashed, hash, SHA256_HASH_SIZE);
+    header.length = htonl(strlen(to_get));
+    Request_t request;
+    request.header = header;
+    strncpy(request.payload, to_get, PATH_LEN);
+    if (compsys_helper_writen(clientfd, &request, sizeof(request)) != sizeof(request)) {
+        fprintf(stderr, "Error sending request to server\n");
+        return;
+    }
+
+    read_response(clientfd, to_get);
 }
 
 int main(int argc, char **argv)
@@ -112,6 +309,8 @@ int main(int argc, char **argv)
         fprintf(stderr, "Usage: %s <config file>\n", argv[0]);
         exit(EXIT_FAILURE);
     } 
+
+    srand(time(NULL));
 
     // Read in configuration options. Should include a client_directory, 
     // client_ip, client_port, server_ip, and server_port
@@ -154,6 +353,13 @@ int main(int argc, char **argv)
     fprintf(stdout, "Client at: %s:%s\n", my_ip, my_port);
     fprintf(stdout, "Server at: %s:%s\n", server_ip, server_port);
 
+    // Connect to the server
+    int clientfd = compsys_helper_open_clientfd(server_ip, server_port);
+    if (clientfd < 0) {
+        fprintf(stderr, "Error opening client connection\n");
+        return 1;
+    }
+
     char username[USERNAME_LEN];
     char password[PASSWORD_LEN];
     char user_salt[SALT_LEN+1];
@@ -179,16 +385,18 @@ int main(int argc, char **argv)
     // Note that a random salt should be used, but you may find it easier to
     // repeatedly test the same user credentials by using the hard coded value
     // below instead, and commenting out this randomly generating section.
-    for (int i=0; i<SALT_LEN; i++)
-    {
-        user_salt[i] = 'a' + (random() % 26);
-    }
-    user_salt[SALT_LEN] = '\0';
-    //strncpy(user_salt, 
+
+    // for (int i=0; i<SALT_LEN; i++)
+    // {
+    //     user_salt[i] = 'a' + (random() % 26);
+    // }
+    // user_salt[SALT_LEN] = '\0';
+
+    // strncpy(user_salt, 
     //    "0123456789012345678901234567890123456789012345678901234567890123\0", 
     //    SALT_LEN+1);
 
-    fprintf(stdout, "Using salt: %s\n", user_salt);
+    // fprintf(stdout, "Using salt: %s\n", user_salt);
 
     // The following function calls have been added as a structure to a 
     // potential solution demonstrating the core functionality. Feel free to 
@@ -199,17 +407,46 @@ int main(int argc, char **argv)
     // Register the given user. As handed out, this line will run every time 
     // this client starts, and so should be removed if user interaction is 
     // added
-    register_user(username, password, user_salt);
 
-    // Retrieve the smaller file, that doesn't not require support for blocks. 
-    // As handed out, this line will run every time this client starts, and so 
-    // should be removed if user interaction is added
-    get_file(username, password, user_salt, "tiny.txt");
+    if (!load_salt(username, user_salt, SALT_LEN)) {
+        generate_random_salt(user_salt, SALT_LEN);
+        save_salt(username, user_salt);
+    }
+
+    register_user(username, password, user_salt, clientfd);
+
+    // // Reconnect to the server for the file request
+
+    // if (!load_salt(username, user_salt, SALT_LEN)) {
+    //     generate_random_salt(user_salt, SALT_LEN);
+    //     save_salt(username, user_salt);
+    // }
+
+    while (1) {
+        clientfd = compsys_helper_open_clientfd(server_ip, server_port);
+        if (clientfd < 0) {
+            fprintf(stderr, "Error: Unable to connect to server\n");
+            exit(EXIT_FAILURE);
+        }
+        fprintf(stdout, "Type the name of a file to be retrieved, or 'quit' to quit: ");
+        char file_to_get[PATH_LEN];
+        scanf("%s", file_to_get);
+        while ((c = getchar()) != '\n' && c != EOF);
+
+        if (strcmp(file_to_get, "quit") == 0) {
+            break;
+        }
+
+        get_file(username, password, user_salt, file_to_get, clientfd);
+    }
+
 
     // Retrieve the larger file, that requires support for blocked messages. As
     // handed out, this line will run every time this client starts, and so 
     // should be removed if user interaction is added
-    get_file(username, password, user_salt, "hamlet.txt");
 
+    // get_file(username, password, user_salt, "hamlet.txt", clientfd);
+
+    close(clientfd);
     exit(EXIT_SUCCESS);
 }
