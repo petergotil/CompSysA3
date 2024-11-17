@@ -90,6 +90,10 @@ void get_signature(char* password, char* salt, hashdata_t* hash) {
     free(combined);
 }
 
+/*
+ * Generate a random salt of the given length. The salt is composed of 
+ * alphanumeric characters and is stored in the provided 'salt' buffer.
+ */
 void generate_random_salt(char* salt, size_t length) {
     const char charset[] = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789";
     for (size_t i = 0; i < length; i++) {
@@ -99,6 +103,10 @@ void generate_random_salt(char* salt, size_t length) {
     salt[length] = '\0';
 }
 
+/*
+ * Save the salt for a given username to a file. The salt is stored in the format
+ * "username:salt" in the file "user_salts.txt".
+ */
 void save_salt(const char* username, const char* salt) {
     FILE* file = fopen("user_salts.txt", "a");
     if (file == NULL) {
@@ -109,6 +117,11 @@ void save_salt(const char* username, const char* salt) {
     fclose(file);
 }
 
+/*
+ * Load the salt for a given username from a file. The salt is read from the file
+ * "user_salts.txt" and stored in the provided 'salt' buffer. Returns 1 if the salt
+ * was successfully loaded, 0 otherwise.
+ */
 int load_salt(const char* username, char* salt, size_t length) {
     FILE* file = fopen("user_salts.txt", "r");
     if (file == NULL) {
@@ -132,6 +145,12 @@ int load_salt(const char* username, char* salt, size_t length) {
     return 0;
 }
 
+/*
+ * Read the response from the server and save the received data blocks to a file.
+ * The response is read from the client file descriptor 'clientfd'. The received
+ * data blocks are saved to the file specified by 'filename'. If the file is empty,
+ * an empty file is created.
+ */
 void read_response(int clientfd, const char* filename) {
     char header[80];
     char* block_data;
@@ -140,9 +159,11 @@ void read_response(int clientfd, const char* filename) {
     uint32_t blocks_received = 0;
 
     n = compsys_helper_readn(clientfd, header, sizeof(header));
+    total_blocks = ntohl(*(uint32_t *)(header + 12));
+    printf("Total blocks: %d\n", total_blocks);
     if (n <= 0) {
         // Håndterer tomme filer
-        if( ntohl(*(uint32_t *)(header + 12)) == 0) {
+        if(total_blocks == 0) {
             if (filename != NULL) {
                 FILE* file = fopen(filename, "wb");
                 if (!file) {
@@ -152,14 +173,13 @@ void read_response(int clientfd, const char* filename) {
                 fclose(file);
                 printf("Empty file %s created successfully\n", filename);
             }
-        return;
+            return;
         }
         fprintf(stderr, "Error: Unable to read response from server\n");
         return;
     }
 
     status_code = ntohl(*(uint32_t *)(header + 4));
-    total_blocks = ntohl(*(uint32_t *)(header + 12));
 
     if (status_code != 1) {
         fprintf(stderr, "Could not retrieve data from server\n");
@@ -185,14 +205,12 @@ void read_response(int clientfd, const char* filename) {
             return;
         }
 
-        // Allocate memory for the block data
         block_data = malloc(block_length + 1);
         if (block_data == NULL) {
             fprintf(stderr, "Error: Unable to allocate memory for block data\n");
             return;
         }
 
-        // Read the block data
         if (blocks_received < total_blocks) {
             n = compsys_helper_readn(clientfd, block_data, block_length);
             if (n <= 0) {
@@ -202,13 +220,13 @@ void read_response(int clientfd, const char* filename) {
             }
         }
 
-        block_data[block_length] = '\0'; // Null-terminate the block data
+        block_data[block_length] = '\0'; 
 
         if (all_blocks[block_id] == NULL) {
             all_blocks[block_id] = block_data;
             blocks_received++;
         } else {
-            free(block_data); // Free the block data if already received
+            free(block_data); 
         }
 
         if (blocks_received < total_blocks) {
