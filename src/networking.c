@@ -410,32 +410,6 @@ int main(int argc, char **argv)
         password[i] = '\0';
     }
 
-    // Note that a random salt should be used, but you may find it easier to
-    // repeatedly test the same user credentials by using the hard coded value
-    // below instead, and commenting out this randomly generating section.
-
-    // for (int i=0; i<SALT_LEN; i++)
-    // {
-    //     user_salt[i] = 'a' + (random() % 26);
-    // }
-    // user_salt[SALT_LEN] = '\0';
-
-    // strncpy(user_salt, 
-    //    "0123456789012345678901234567890123456789012345678901234567890123\0", 
-    //    SALT_LEN+1);
-
-    // fprintf(stdout, "Using salt: %s\n", user_salt);
-
-    // The following function calls have been added as a structure to a 
-    // potential solution demonstrating the core functionality. Feel free to 
-    // add, remove or otherwise edit. Note that if you are creating a system 
-    // for user-interaction the following lines will almost certainly need to 
-    // be removed/altered.
-
-    // Register the given user. As handed out, this line will run every time 
-    // this client starts, and so should be removed if user interaction is 
-    // added
-
     if (!load_salt(username, user_salt, SALT_LEN)) {
         generate_random_salt(user_salt, SALT_LEN);
         save_salt(username, user_salt);
@@ -443,12 +417,6 @@ int main(int argc, char **argv)
 
     register_user(username, password, user_salt, clientfd);
 
-    // // Reconnect to the server for the file request
-
-    // if (!load_salt(username, user_salt, SALT_LEN)) {
-    //     generate_random_salt(user_salt, SALT_LEN);
-    //     save_salt(username, user_salt);
-    // }
 
     while (1) {
         clientfd = compsys_helper_open_clientfd(server_ip, server_port);
@@ -467,13 +435,6 @@ int main(int argc, char **argv)
 
         get_file(username, password, user_salt, file_to_get, clientfd);
     }
-
-
-    // Retrieve the larger file, that requires support for blocked messages. As
-    // handed out, this line will run every time this client starts, and so 
-    // should be removed if user interaction is added
-
-    // get_file(username, password, user_salt, "hamlet.txt", clientfd);
 
     close(clientfd);
     exit(EXIT_SUCCESS);
