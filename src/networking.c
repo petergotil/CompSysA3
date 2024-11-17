@@ -160,7 +160,6 @@ void read_response(int clientfd, const char* filename) {
 
     n = compsys_helper_readn(clientfd, header, sizeof(header));
     total_blocks = ntohl(*(uint32_t *)(header + 12));
-    printf("Total blocks: %d\n", total_blocks);
     if (n <= 0) {
         // Håndterer tomme filer
         if(total_blocks == 0) {
