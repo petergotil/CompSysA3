@@ -338,6 +338,7 @@ int main(int argc, char **argv)
         exit(EXIT_FAILURE);
     } 
 
+    // Sørger for at salt genereringen er tilfældig hver gang
     srand(time(NULL));
 
     // Read in configuration options. Should include a client_directory, 
