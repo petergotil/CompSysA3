@@ -141,6 +141,19 @@ void read_response(int clientfd, const char* filename) {
 
     n = compsys_helper_readn(clientfd, header, sizeof(header));
     if (n <= 0) {
+        // Håndterer tomme filer
+        if( ntohl(*(uint32_t *)(header + 12)) == 0) {
+            if (filename != NULL) {
+                FILE* file = fopen(filename, "wb");
+                if (!file) {
+                    fprintf(stderr, "Error: Unable to open file %s for writing\n", filename);
+                    return;
+                }
+                fclose(file);
+                printf("Empty file %s created successfully\n", filename);
+            }
+        return;
+        }
         fprintf(stderr, "Error: Unable to read response from server\n");
         return;
     }
@@ -248,18 +261,15 @@ void register_user(char* username, char* password, char* salt, int clientfd) {
     RequestHeader_t header;
     strncpy(header.username, username, USERNAME_LEN);
     memcpy(header.salted_and_hashed, hash, SHA256_HASH_SIZE);
-    header.length = 0;
 
     Request_t request;
     request.header = header;
     memset(request.payload, 0, PATH_LEN);
 
-    // Send request to server
     if (compsys_helper_writen(clientfd, &request, sizeof(request)) != sizeof(request)) {
         fprintf(stderr, "Error sending request to server\n");
         return;
     }
-
 
     char response[1024];
     ssize_t n = compsys_helper_readn(clientfd, response, sizeof(response));
